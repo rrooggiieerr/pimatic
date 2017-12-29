@@ -1525,8 +1525,87 @@ module.exports = (env) ->
           @device.previous().then( => __("play previous track of %s", @device.name) )
       ) 
          
+  ###
+  The Enable Disable Action Provider
+  -------------
+  Provides the ability to enable or disable devices. Currently it handles the following actions:
 
+  * enable device _device_
+  * disable device  _device_
 
+  where _device_ is the name or id of a device
+  ###
+  class EnableDisableDeviceActionProvider extends ActionProvider
+    constructor: (@framework) ->
+
+    parseAction: (input, context) ->
+      # Get all devices which have an enable method
+      enableDisableDevices = _(@framework.deviceManager.devices).values().filter(
+        (device) => device.hasAction("enableDevice") and device.hasAction("disableDevice") 
+      ).value()
+
+      device = null
+      state = null
+      match = null
+
+      # Match action
+      # enable device <device>
+      m = M(input, context)
+        .match(['enable', 'disable'], (m, _state) ->
+          m.match(' device ')
+            .matchDevice(enableDisableDevices, (m, _device) ->
+              device = _device
+              state = _state
+              match =  m.getFullMatch()
+            )
+        )
+
+      # Does the action match with our syntax?
+      if match?
+        assert device?
+        assert state in ['enable', 'disable']
+        assert typeof match is "string"
+        state = (state is 'enable')
+        #env.logger.info state
+        return {
+          token: match
+          nextInput: input.substring match.length
+          actionHandler: new EnableDisableDeviceActionHandler device, state
+        }
+      return null
+
+  class EnableDisableDeviceActionHandler extends ActionHandler
+    constructor: (@device, @state) ->
+
+    setup: ->
+      @dependOnDevice(@device)
+      super()
+
+    ###
+    Handles the above actions.
+    ###
+    _doExecuteAction: (simulate, state) ->
+      return (
+        if simulate
+          if state
+            Promise.resolve __('would enable device %s', @device.name)
+          else
+            Promise.resolve __('would disable device %s', @device.name)
+        else
+          if state
+            @device.enableDevice()
+            Promise.resolve __('enabled device %s', @device.name)
+          else
+            @device.disableDevice()
+            Promise.resolve __('disabled device %s', @device.name)
+      )
+
+    # ### executeAction()
+    executeAction: (simulate) => @_doExecuteAction(simulate, @state)
+    # ### hasRestoreAction()
+    hasRestoreAction: -> yes
+    # ### executeRestoreAction()
+    executeRestoreAction: (simulate) => @_doExecuteAction(simulate, (not @state))
 
   # Export the classes so that they can be accessed by the framework
   return exports = {
@@ -1551,4 +1630,5 @@ module.exports = (env) ->
     AVPlayerVolumeActionProvider
     AVPlayerNextActionProvider
     AVPlayerPrevActionProvider
+    EnableDisableDeviceActionProvider
   }

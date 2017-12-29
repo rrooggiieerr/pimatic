@@ -21,6 +21,8 @@ module.exports = (env) ->
   The Device class is the common superclass for all devices like actuators or sensors.
   ###
   class Device extends require('events').EventEmitter
+    _enabled: null
+
     # A unique id defined by the config or by the plugin that provides the device.
     id: null
     # The name of the actuator to display at the frontend.
@@ -159,6 +161,16 @@ module.exports = (env) ->
       @[getterName] = fn
       return
 
+    enableDevice: ->
+      if !@_enabled
+        @_enabled = true
+        @emit 'enabled', @_enabled
+
+    disableDevice: ->
+      if @_enabled
+        @_enabled = false
+        @emit 'enabled', @_enabled
+
     toJson: ->
       json = {
         id: @id
@@ -296,6 +308,10 @@ module.exports = (env) ->
         returns:
           state:
             type: t.boolean
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     attributes:
       state:
@@ -358,6 +374,10 @@ module.exports = (env) ->
         description: "Turns the dim level to 0%"
       toggle:
         description: "Toggle the state of the dimmer"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     attributes:
       dimlevel:
@@ -434,6 +454,10 @@ module.exports = (env) ->
         params:
           percentage:
             type: t.number
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     template: "shutter"
 
@@ -574,7 +598,6 @@ module.exports = (env) ->
     else ""
 
   class HeatingThermostat extends Device
-
     attributes:
       temperatureSetpoint:
         label: "Temperature Setpoint"
@@ -608,6 +631,10 @@ module.exports = (env) ->
         params:
           temperatureSetpoint:
             type: "number"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     template: "thermostat"
 
@@ -655,7 +682,6 @@ module.exports = (env) ->
       throw new Error("changeTemperatureTo must be implemented by a subclass")
 
   class AVPlayer extends Device
-
     actions:
       play:
         description: "starts playing"
@@ -669,6 +695,10 @@ module.exports = (env) ->
         description: "play previous song"
       volume:
         description: "Change volume of player"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     attributes:
       currentArtist:
@@ -717,7 +747,6 @@ module.exports = (env) ->
     getVolume: ()  -> Promise.resolve(@_volume)
 
   class ButtonsDevice extends Device
-
     attributes:
       button:
         description: "The last pressed button"
@@ -729,25 +758,35 @@ module.exports = (env) ->
           buttonId:
             type: t.string
         description: "Press a button"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     template: "buttons"
 
     _lastPressedButton: null
 
-    constructor: (@config)->
+    constructor: (@config, lastState)->
       @id = @config.id
       @name = @config.name
+      @_enabled = lastState?.enabled?.value or true
       super()
 
     getButton: -> Promise.resolve(@_lastPressedButton)
 
     buttonPressed: (buttonId) ->
-      for b in @config.buttons
-        if b.id is buttonId
-          @_lastPressedButton = b.id
-          @emit 'button', b.id
-          return Promise.resolve()
-      throw new Error("No button with the id #{buttonId} found")
+      if @_enabled
+        for b in @config.buttons
+          if b.id is buttonId
+            @_lastPressedButton = b.id
+            @emit 'button', b.id
+            return Promise.resolve()
+        throw new Error("No button with the id #{buttonId} found")
+      else
+        env.logger.info "Device is disabled"
+        @emit 'button', @_lastPressedButton
+        return Promise.resolve()
 
     destroy: () ->
       super()
@@ -764,6 +803,10 @@ module.exports = (env) ->
           value:
             type: t.string
         description: "Sets the input value"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     constructor: (@config, lastState) ->
       @name = @config.name
@@ -777,6 +820,7 @@ module.exports = (env) ->
       }
 
       @_defaultValue = if @_inputType is "string" then "" else 0
+      @_enabled = lastState?.enabled?.value or true
       @_input = lastState?.input?.value or @_defaultValue
       super()
 
@@ -788,13 +832,17 @@ module.exports = (env) ->
         @emit 'input', value
 
     changeInputTo: (value) ->
-      if @config.type is "number"
-        if isNaN(value)
-          throw new Error("Input value is not a number")
+      if @_enabled
+        if @config.type is "number"
+          if isNaN(value)
+            throw new Error("Input value is not a number")
+          else
+            @_setInput(parseFloat(value))
         else
-          @_setInput(parseFloat(value))
+          @_setInput value
       else
-        @_setInput value
+        env.logger.info "Device is disabled"
+        @emit 'input', @_input
       return Promise.resolve()
 
     destroy: ->
@@ -883,10 +931,15 @@ module.exports = (env) ->
           value:
             type: t.string
         description: "Sets the variable to the value"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     constructor: (@config, lastState, @framework) ->
       super(@config, lastState)
       @_variableName = (@config.variable||'').replace /^[\s\$]+|[\s]$/g, ''
+      @_enabled = lastState?.enabled?.value or true
 
       @framework.variableManager.on('variableValueChanged', @changeListener = (changedVar, value) =>
         if @_variableName is changedVar.name
@@ -894,11 +947,16 @@ module.exports = (env) ->
       )
 
     changeInputTo: (value) ->
-      variable = @framework.variableManager.getVariableByName(@_variableName)
-      unless variable?
-        throw new Error("Could not find variable with name #{@_variableName}")
-      @framework.variableManager.setVariableToValue(@_variableName, value, variable.unit)
-      super(value)
+      if @_enabled
+        variable = @framework.variableManager.getVariableByName(@_variableName)
+        unless variable?
+          throw new Error("Could not find variable with name #{@_variableName}")
+        @framework.variableManager.setVariableToValue(@_variableName, value, variable.unit)
+        super(value)
+      else
+        env.logger.info "Device is disabled"
+        @emit 'input', @_value
+        return Promise.resolve()
 
     destroy: ->
       @framework.variableManager.removeListener('variableValueChanged', @changeListener)
@@ -915,27 +973,35 @@ module.exports = (env) ->
           value:
             type: t.string
         description: "Sets the variable to the value"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     constructor: (@config, lastState, @framework) ->
       super(@config, lastState, @framework)
 
     changeInputTo: (value) ->
-      variable = @framework.variableManager.getVariableByName(@_variableName)
-      unless variable?
-        throw new Error("Could not find variable with name #{@_variableName}")
-      @framework.variableManager.setVariableToValue(@_variableName, value, variable.unit)
-      timePattern = /// ^([01]?[0-9]|2[0-3]):[0-5][0-9] ///
-      hourPattern = ///
-            ^[01]?[0-9]|2[0-3] 
-            ///
+      if @_enabled
+        variable = @framework.variableManager.getVariableByName(@_variableName)
+        unless variable?
+          throw new Error("Could not find variable with name #{@_variableName}")
+        @framework.variableManager.setVariableToValue(@_variableName, value, variable.unit)
+        timePattern = /// ^([01]?[0-9]|2[0-3]):[0-5][0-9] ///
+        hourPattern = ///
+              ^[01]?[0-9]|2[0-3] 
+              ///
 
-      if value.match timePattern
-        @_setInput value
-      else
-        if value.match hourPattern
-          @_setInput value "#{textValue}:00"
+        if value.match timePattern
+          @_setInput value
         else
-          throw new Error("Input value is not a valid time")
+          if value.match hourPattern
+            @_setInput value "#{textValue}:00"
+          else
+            throw new Error("Input value is not a valid time")
+      else
+        env.logger.info "Device is disabled"
+        @emit 'input', @_value
       return Promise.resolve()
 
     destroy: ->
@@ -947,11 +1013,16 @@ module.exports = (env) ->
     constructor: (@config, lastState) ->
       @name = @config.name
       @id = @config.id
+      @_enabled = lastState?.enabled?.value or true
       @_state = lastState?.state?.value or off
       super()
 
     changeStateTo: (state) ->
-      @_setState(state)
+      if @_enabled
+        @_setState(state)
+      else
+        env.logger.info "Device is disabled"
+        @emit "state", @_state
       return Promise.resolve()
 
     destroy: () ->
@@ -963,13 +1034,18 @@ module.exports = (env) ->
     constructor: (@config, lastState) ->
       @name = @config.name
       @id = @config.id
+      @_enabled = lastState?.enabled?.value or true
       @_dimlevel = lastState?.dimlevel?.value or 0
       @_state = lastState?.state?.value or off
       super()
 
     # Returns a promise that is fulfilled when done.
     changeDimlevelTo: (level) ->
-      @_setDimlevel(level)
+      if @_enabled
+        @_setDimlevel(level)
+      else
+        env.logger.info "Device is disabled"
+        @emit "dimlevel", @_dimlevel
       return Promise.resolve()
 
     destroy: () ->
@@ -981,16 +1057,25 @@ module.exports = (env) ->
       @name = @config.name
       @id = @config.id
       @rollingTime = @config.rollingTime
+      @_enabled = lastState?.enabled?.value or true
       @_position = lastState?.position?.value or 'stopped'
       super()
 
     stop: ->
-      @_setPosition('stopped')
+      if @_enabled
+        @_setPosition('stopped')
+      else
+        env.logger.info "Device is disabled"
+        @emit "position", @_position
       return Promise.resolve()
 
     # Returns a promise that is fulfilled when done.
     moveToPosition: (position) ->
-      @_setPosition(position)
+      if @_enabled
+        @_setPosition(position)
+      else
+        env.logger.info "Device is disabled"
+        @emit "position", @_position
       return Promise.resolve()
 
     destroy: () ->
@@ -1011,10 +1096,15 @@ module.exports = (env) ->
         params:
           valve:
             type: "number"
+      enableDevice:
+        description: 'Enables the device'
+      disableDevice:
+        description: 'Disables the device'
 
     constructor: (@config, lastState) ->
       @id = @config.id
       @name = @config.name
+      @_enabled = lastState?.enabled?.value or true
       @_temperatureSetpoint = lastState?.temperatureSetpoint?.value or 20
       @_mode = lastState?.mode?.value or "auto"
       @_battery = lastState?.battery?.value or "ok"
@@ -1022,15 +1112,27 @@ module.exports = (env) ->
       super()
 
     changeModeTo: (mode) ->
-      @_setMode(mode)
+      if @_enabled
+        @_setMode(mode)
+      else
+        env.logger.info "Device is disabled"
+        @emit "mode", @_mode
       return Promise.resolve()
 
     changeValveTo: (valve) ->
-      @_setValve(valve)
+      if @_enabled
+        @_setValve(valve)
+      else
+        env.logger.info "Device is disabled"
+        @emit "valve", @_valve
       return Promise.resolve()
 
     changeTemperatureTo: (temperatureSetpoint) ->
-      @_setSetpoint(temperatureSetpoint)
+      if @_enabled
+        @_setSetpoint(temperatureSetpoint)
+      else
+        env.logger.info "Device is disabled"
+        @emit "temperatureSetpoint", @_temperatureSetpoint
       return Promise.resolve()
 
     destroy: () ->

@@ -831,6 +831,7 @@ module.exports = (env) ->
           env.actions.AVPlayerVolumeActionProvider
           env.actions.AVPlayerNextActionProvider
           env.actions.AVPlayerPrevActionProvider
+          env.actions.EnableDisableDeviceActionProvider
         ]
         for actProv in defaultActionProvider
           actProvInst = new actProv(this)
